@@ -19,7 +19,7 @@ jobs:
 
       - name: Clone LineageOS Kernel Source
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sdm845.x -b lineage-22.2 kernel
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sdm845 -b lineage-22.2 kernel
 
       - name: Integrate KernelSU
         run: |
