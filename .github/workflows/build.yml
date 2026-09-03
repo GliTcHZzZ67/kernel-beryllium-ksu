@@ -15,19 +15,32 @@ jobs:
       - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc libncurses5-dev libssl-dev ccache zip curl flex bison libelf-dev
-          # Install 32-bit support for cross-compilation
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y \
+            build-essential bc libncurses5-dev libssl-dev ccache \
+            zip curl flex bison libelf-dev libperl-dev python3-dev \
+            git wget liblz4-tool lz4
 
       - name: Clone LineageOS Kernel Source
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sdm845 -b lineage-22.2 kernel
 
+      - name: Create Beryllium Defconfig
+        run: |
+          cd kernel
+          # Use SDM845 defconfig as base (Beryllium uses SDM845)
+          cp arch/arm64/configs/sdm845_defconfig arch/arm64/configs/beryllium_defconfig
+          
+          # Add KernelSU configuration
+          cat >> arch/arm64/configs/beryllium_defconfig << 'EOF'
+          CONFIG_KSU=y
+          # Optimizations for Beryllium
+          CONFIG_LOCALVERSION="-LOS22.2-KSU"
+          EOF
+
       - name: Integrate KernelSU
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/beryllium_defconfig
 
       - name: Download Clang Toolchain
         run: |
@@ -35,30 +48,66 @@ jobs:
 
       - name: Compile Kernel
         run: |
-          export PATH="$(pwd)/clang/bin:$PATH"
           cd kernel
-          make O=out ARCH=arm64 beryllium_defconfig
+          
+          # Clean
+          make O=out clean
+          make O=out mrproper
+          
+          # Configure
+          make -j$(nproc --all) O=out ARCH=arm64 beryllium_defconfig
+          
+          # Verify defconfig is correct
+          if [ ! -f "out/.config" ]; then
+            echo "ERROR: Config file not created!"
+            exit 1
+          fi
+          
+          # Build with proper toolchain setup
           make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
+            CC=$(pwd)/../clang/bin/clang \
+            CXX=$(pwd)/../clang/bin/clang++ \
+            AR=$(pwd)/../clang/bin/llvm-ar \
+            LD=$(pwd)/../clang/bin/ld.lld \
+            LLVM_AR=$(pwd)/../clang/bin/llvm-ar \
+            LLVM_NM=$(pwd)/../clang/bin/llvm-nm \
+            NM=$(pwd)/../clang/bin/llvm-nm \
+            OBJCOPY=$(pwd)/../clang/bin/llvm-objcopy \
+            OBJDUMP=$(pwd)/../clang/bin/llvm-objdump \
+            READELF=$(pwd)/../clang/bin/llvm-readelf \
+            STRIP=$(pwd)/../clang/bin/llvm-strip \
+            HOSTCC=$(which gcc) \
+            HOSTCXX=$(which g++) \
+            HOSTLD=$(which ld) \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android-
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - name: Check Build Output
+        run: |
+          if [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
+            echo "✓ Kernel compiled successfully!"
+            ls -lh kernel/out/arch/arm64/boot/Image.gz-dtb
+          else
+            echo "✗ Kernel image not found!"
+            exit 1
+          fi
 
       - name: Pack to AnyKernel3
         run: |
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          mkdir -p AnyKernel3/kernels
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/kernels/
           cd AnyKernel3
-          zip -r9 ../Beryllium-LOS22.2-KSU.zip * -x .git README.md .github
+          
+          # Create metadata
+          echo "Beryllium LOS 22.2 with KernelSU" > kernels/device.txt
+          echo "$(date '+%Y-%m-%d %H:%M:%S')" > kernels/build_date.txt
+          
+          zip -r9 ../Beryllium-LOS22.2-KSU.zip * -x ".git/*" "README.md" ".github/*" "*.git"
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Beryllium-LOS22.2-KSU
           path: Beryllium-LOS22.2-KSU.zip
+          retention-days: 30
