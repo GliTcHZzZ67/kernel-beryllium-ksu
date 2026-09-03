@@ -17,9 +17,10 @@ jobs:
 
       - name: Integrate KernelSU
         run: |
+          ls -la
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           echo "CONFIG_KSU=y" >> arch/arm64/configs/beryllium_defconfig
-
+          
       - name: Download Clang Toolchain
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
