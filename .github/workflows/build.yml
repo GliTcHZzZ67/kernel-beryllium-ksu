@@ -1,0 +1,47 @@
+name: Build Beryllium LOS 22.2 KernelSU
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc libncurses5-dev libssl-dev ccache zip curll flex bison libssl-dev libelf-dev
+
+      - name: Integrate KernelSU
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/beryllium_defconfig
+
+      - name: Download Clang Toolchain
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$(pwd)/clang/bin:$PATH"
+          make O=out ARCH=arm64 beryllium_defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android-
+
+      - name: Pack to AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../Beryllium-LOS22.2-KSU.zip * -x .git README.md
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Beryllium-LOS22.2-KSU
+          path: Beryllium-LOS22.2-KSU.zip
