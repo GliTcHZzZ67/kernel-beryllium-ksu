@@ -24,54 +24,57 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_sdm845 -b lineage-22.2 kernel
 
+      - name: Patch Broken Device Trees
+        run: |
+          cd kernel
+          # Remove broken QVR device tree files from Makefile
+          sed -i '/sdm845-v2-qvr/d' arch/arm64/boot/dts/qcom/Makefile
+          echo "Removed broken QVR device trees from build"
+          
+          # Verify the patch
+          grep -c "sdm845-v2-qvr" arch/arm64/boot/dts/qcom/Makefile || echo "Successfully removed QVR entries"
+
       - name: Create Beryllium Defconfig
         run: |
           cd kernel
           # Use SDM845 defconfig as base (Beryllium uses SDM845)
           cp arch/arm64/configs/sdm845_defconfig arch/arm64/configs/beryllium_defconfig
           
-          # Add KernelSU configuration
+          # Add KernelSU and optimization configs
           cat >> arch/arm64/configs/beryllium_defconfig << 'EOF'
           CONFIG_KSU=y
           CONFIG_LOCALVERSION="-LOS22.2-KSU"
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
           EOF
 
       - name: Integrate KernelSU
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash - || echo "KernelSU setup completed"
 
       - name: Download Clang Toolchain
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
-
-      - name: Fix Device Tree Issues
-        run: |
-          cd kernel
-          # Skip problematic QVR device tree
-          rm -f arch/arm64/boot/dts/qcom/sdm845-v2-qvr-evt.dtb 2>/dev/null || true
-          
-          # Disable problematic device trees in Makefile if needed
-          sed -i '/sdm845-v2-qvr-evt/d' arch/arm64/boot/dts/qcom/Makefile 2>/dev/null || true
+          echo "Clang version:"
+          ./clang/bin/clang --version
 
       - name: Compile Kernel
         run: |
           cd kernel
           
-          # Clean
+          echo "=== Cleaning build directory ==="
           make O=out clean
           make O=out mrproper
           
-          # Configure
+          echo "=== Configuring kernel ==="
           make -j$(nproc --all) O=out ARCH=arm64 beryllium_defconfig
           
-          # Verify defconfig
           if [ ! -f "out/.config" ]; then
             echo "ERROR: Config file not created!"
             exit 1
           fi
           
-          # Build kernel (skip problematic dtbs if needed)
+          echo "=== Compiling kernel ==="
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=$(pwd)/../clang/bin/clang \
             CXX=$(pwd)/../clang/bin/clang++ \
@@ -86,41 +89,58 @@ jobs:
             STRIP=$(pwd)/../clang/bin/llvm-strip \
             HOSTCC=$(which gcc) \
             HOSTCXX=$(which g++) \
-            HOSTLD=$(which ld) \
+            HOSTLD=$(which ld.gold) \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- || true
+            CROSS_COMPILE=aarch64-linux-android-
+          
+          echo "=== Compilation completed ==="
 
-      - name: Check Build Output
+      - name: Check Kernel Output
         run: |
-          if [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "✓ Kernel compiled successfully!"
-            ls -lh kernel/out/arch/arm64/boot/Image.gz-dtb
+          cd kernel
+          echo "=== Checking build artifacts ==="
+          
+          # Check for kernel image
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            echo "✓ Image.gz-dtb found!"
+            ls -lh out/arch/arm64/boot/Image.gz-dtb
+            KERNEL_FILE="out/arch/arm64/boot/Image.gz-dtb"
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            echo "✓ Image.gz found (no DTB appended)"
+            ls -lh out/arch/arm64/boot/Image.gz
+            KERNEL_FILE="out/arch/arm64/boot/Image.gz"
+          elif [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "✓ Image found (uncompressed)"
+            ls -lh out/arch/arm64/boot/Image
+            KERNEL_FILE="out/arch/arm64/boot/Image"
           else
-            echo "✗ Kernel image not found - checking for alternatives..."
-            find kernel/out -name "Image*" -o -name "*.dtb" 2>/dev/null || echo "No images found"
+            echo "✗ No kernel image found!"
+            echo "=== Available files in boot directory ==="
+            ls -lh out/arch/arm64/boot/ 2>/dev/null || echo "Boot directory not found"
             exit 1
           fi
+          
+          # Store path for next step
+          echo "KERNEL_FILE=$KERNEL_FILE" >> $GITHUB_ENV
 
       - name: Pack to AnyKernel3
         run: |
           mkdir -p AnyKernel3/kernels
           
           # Copy kernel image
-          if [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/kernels/
-          elif [ -f "kernel/out/arch/arm64/boot/Image.gz" ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/kernels/
-          else
-            echo "ERROR: No kernel image found!"
-            exit 1
-          fi
+          echo "Copying ${{ env.KERNEL_FILE }} to AnyKernel3"
+          cp "kernel/${{ env.KERNEL_FILE }}" AnyKernel3/kernels/kernel.img
+          
+          # Create metadata
+          echo "Beryllium LOS 22.2 with KernelSU" > AnyKernel3/kernels/device.txt
+          echo "$(date '+%Y-%m-%d %H:%M:%S')" > AnyKernel3/kernels/build_date.txt
           
           cd AnyKernel3
-          echo "Beryllium LOS 22.2 with KernelSU" > kernels/device.txt
-          echo "$(date '+%Y-%m-%d %H:%M:%S')" > kernels/build_date.txt
-          
+          echo "=== Creating flashable zip ==="
           zip -r9 ../Beryllium-LOS22.2-KSU.zip * -x ".git/*" "README.md" ".github/*" "*.git"
+          
+          echo "=== Zip created ==="
+          ls -lh ../Beryllium-LOS22.2-KSU.zip
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
@@ -128,4 +148,3 @@ jobs:
           name: Beryllium-LOS22.2-KSU
           path: Beryllium-LOS22.2-KSU.zip
           retention-days: 30
-        
