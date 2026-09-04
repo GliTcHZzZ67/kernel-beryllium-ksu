@@ -27,12 +27,20 @@ jobs:
       - name: Patch Broken Device Trees
         run: |
           cd kernel
-          # Remove broken QVR device tree files from Makefile
+          
+          # Remove broken interposer device tree files that reference non-existent nodes
+          sed -i '/sdm845-interposer/d' arch/arm64/boot/dts/qcom/Makefile
           sed -i '/sdm845-v2-qvr/d' arch/arm64/boot/dts/qcom/Makefile
-          echo "Removed broken QVR device trees from build"
+          echo "Removed broken device trees from build"
           
           # Verify the patch
-          grep -c "sdm845-v2-qvr" arch/arm64/boot/dts/qcom/Makefile || echo "Successfully removed QVR entries"
+          echo "Device trees removed:"
+          grep -c "sdm845-interposer" arch/arm64/boot/dts/qcom/Makefile || echo "✓ interposer entries removed"
+          grep -c "sdm845-v2-qvr" arch/arm64/boot/dts/qcom/Makefile || echo "✓ QVR entries removed"
+          
+          # List remaining device trees being built
+          echo "Remaining device trees:"
+          grep -E "\.dtb" arch/arm64/boot/dts/qcom/Makefile | head -20
 
       - name: Create Beryllium Defconfig
         run: |
@@ -91,9 +99,20 @@ jobs:
             HOSTCXX=$(which g++) \
             HOSTLD=$(which ld.gold) \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android-
+            CROSS_COMPILE=aarch64-linux-android- \
+            2>&1 | tee build.log
           
-          echo "=== Compilation completed ==="
+          # Check build status
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "Build completed with status: $BUILD_STATUS"
+          
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "=== Build failed, checking for errors ==="
+            grep -i "error:" build.log | head -20
+            exit $BUILD_STATUS
+          fi
+          
+          echo "=== Compilation completed successfully ==="
 
       - name: Check Kernel Output
         run: |
